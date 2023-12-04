@@ -5,9 +5,9 @@ all:
 	$(MAKE) -C runtime
 	$(MAKE) -C byterun
 	# $(MAKE) -C interpreter
-	$(MAKE) -C runtime unit_tests.o
-	$(MAKE) -C runtime invariants_check.o
-	$(MAKE) -C runtime invariants_check_debug_print.o
+	# $(MAKE) -C runtime unit_tests.o
+	# $(MAKE) -C runtime invariants_check.o
+	# $(MAKE) -C runtime invariants_check_debug_print.o
 
 clean:
 	# $(MAKE) clean -C interpreter

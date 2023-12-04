@@ -5,6 +5,11 @@
 # include <errno.h>
 # include <malloc.h>
 # include "../runtime/runtime.h"
+# include "../runtime/virt_stack.h"
+
+extern void __gc_init();
+extern size_t *__gc_stack_top, *__gc_stack_bottom;
+extern size_t SPACE_SIZE;
 
 void *__start_custom_data;
 void *__stop_custom_data;
@@ -72,163 +77,294 @@ bytefile* read_file (char *fname) {
   return file;
 }
 
+size_t eval_binop(size_t left, size_t right, char binop_code) {
+  switch (binop_code)
+  {
+  case 0: // "+"
+    return (size_t) Ls__Infix_43((void*) left, (void*) right);
+  case 1: // "-"
+    return (size_t) Ls__Infix_45((void*) left, (void*) right);
+  case 2: // "*"
+    return (size_t) Ls__Infix_42((void*) left, (void*) right);
+  case 3: // "/"
+    return (size_t) Ls__Infix_47((void*) left, (void*) right);
+  case 4: // "%"
+    return (size_t) Ls__Infix_37((void*) left, (void*) right);
+  case 5: // "<"
+    return (size_t) Ls__Infix_60((void*) left, (void*) right);
+  case 6: // "<="
+    return (size_t) Ls__Infix_6061((void*) left, (void*) right);
+  case 7: // ">"
+    return (size_t) Ls__Infix_62((void*) left, (void*) right);
+  case 8: // ">="
+    return (size_t) Ls__Infix_6261((void*) left, (void*) right);
+  case 9: // "=="
+    return (size_t) Ls__Infix_6161((void*) left, (void*) right);
+  case 10: // "!="
+    return (size_t) Ls__Infix_3361((void*) left, (void*) right);
+  case 11: // "&&"
+    return (size_t) Ls__Infix_3838((void*) left, (void*) right);
+  case 12: // "!!"
+    return (size_t) Ls__Infix_3333((void*) left, (void*) right);
+  
+  default:
+    failure("Unexpected binop code %d", (int) binop_code);
+    // Dead code
+    return 0;
+  }
+}
+
+size_t* get_memory_addr(char type, int offset, size_t *fp, bytefile *bf, virt_stack *v_stack) {
+  switch (type)
+  {
+  case 0: // Global
+    return bf->global_ptr + offset;
+
+  case 1: // Local
+    return vstack_access(v_stack, fp - offset - 1);
+  
+  case 2: // Arg
+    return vstack_access(v_stack, fp + offset + 3);
+
+  case 3: // Access
+    size_t closure_args = *vstack_access(v_stack, fp + 1) - 1;
+    size_t closure_addr = *vstack_access(v_stack, fp + 3 + closure_args);
+    return (size_t*) Belem_ref((void*) closure_addr, BOX(offset + 1));
+
+  default:
+    break;
+  }
+}
+
 /* Disassembles the bytecode pool */
-void disassemble (FILE *f, bytefile *bf) {
+void interpret (bytefile *bf, virt_stack* v_stack) {
   
 # define INT    (ip += sizeof (int), *(int*)(ip - sizeof (int)))
 # define BYTE   *ip++
 # define STRING get_string (bf, INT)
 # define FAIL   failure ("ERROR: invalid opcode %d-%d\n", h, l)
   
+
+  vstack_push(v_stack, 0);
+  vstack_push(v_stack, 0);
+  vstack_push(v_stack, 0);
+  vstack_push(v_stack, 2);
+
   char *ip     = bf->code_ptr;
-  char *ops [] = {"+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!=", "&&", "!!"};
-  char *pats[] = {"=str", "#string", "#array", "#sexp", "#ref", "#val", "#fun"};
-  char *lds [] = {"LD", "LDA", "ST"};
-  do {
+  size_t *fp   = vstack_top(v_stack);
+  while (ip != NULL) {
     char x = BYTE,
          h = (x & 0xF0) >> 4,
          l = x & 0x0F;
-
-    fprintf (f, "0x%.8x:\t", ip-bf->code_ptr-1);
     
     switch (h) {
     case 15:
-      goto stop;
+      return;
       
     /* BINOP */
     case 0:
-      fprintf (f, "BINOP\t%s", ops[l-1]);
+      size_t right = vstack_pop(v_stack);
+      size_t left = vstack_pop(v_stack);
+      vstack_push(v_stack, eval_binop(left, right, l - 1));
       break;
       
     case 1:
+      size_t value;
       switch (l) {
-      case  0:
-        fprintf (f, "CONST\t%d", INT);
+      case  0: // CONST
+        vstack_push(v_stack, (size_t) BOX(INT));
         break;
         
       case  1:
-        fprintf (f, "STRING\t%s", STRING);
+        vstack_push(v_stack, (size_t) Bstring(STRING));
         break;
           
-      case  2:
-        fprintf (f, "SEXP\t%s ", STRING);
-        fprintf (f, "%d", INT);
+      case  2: { // SEXP
+        char* name = STRING;
+        size_t argc = (size_t) INT;
+        int tag = LtagHash(name);
+        vstack_reverse(v_stack, argc);
+        void* sexp = Bsexp_data(BOX(argc + 1), tag, (int*) vstack_top(v_stack));
+        for (size_t i = 0; i < argc; i++) {
+          vstack_pop(v_stack);
+        }
+        vstack_push(v_stack, (size_t) sexp);
+        break;
+      }
+        
+      case  3: // STI
+        failure("Unsupported STI byte code");
         break;
         
-      case  3:
-        fprintf (f, "STI");
+      case  4: // STA
+        value = vstack_pop(v_stack);
+        size_t index = vstack_pop(v_stack);
+        if (UNBOXED(index)) {
+          size_t x = vstack_pop(v_stack);
+          vstack_push(v_stack, (size_t) Bsta((void*) value, (int) index, (void*) x));
+        } else {
+          vstack_push(v_stack, (size_t) Bsta((void*) value, (int) index, NULL));
+        }
         break;
         
-      case  4:
-        fprintf (f, "STA");
+      case  5: // JMP
+        ip = bf->code_ptr + INT;
         break;
         
-      case  5:
-        fprintf (f, "JMP\t0x%.8x", INT);
+      case  6: { // END
+        size_t value = vstack_pop(v_stack);
+        while (vstack_top(v_stack) != fp) {
+          vstack_pop(v_stack);
+        }
+        fp = (size_t*) vstack_pop(v_stack);
+        size_t argc = vstack_pop(v_stack);
+        ip = (char*) vstack_pop(v_stack);
+        
+        for (size_t i = 0; i < argc; i++) {
+          vstack_pop(v_stack);
+        }
+        vstack_push(v_stack, value);
+        break;
+      }
+        
+      case  7: // RET
+        failure("Unsupported RET byte code");
         break;
         
-      case  6:
-        fprintf (f, "END");
+      case  8: // DROP
+        vstack_pop(v_stack);
         break;
         
-      case  7:
-        fprintf (f, "RET");
+      case  9: // DUP
+        value = vstack_pop(v_stack);
+        vstack_push(v_stack, value);
+        vstack_push(v_stack, value);
         break;
         
-      case  8:
-        fprintf (f, "DROP");
-        break;
-        
-      case  9:
-        fprintf (f, "DUP");
-        break;
-        
-      case 10:
-        fprintf (f, "SWAP");
+      case 10:  // SWAP
+        size_t high = vstack_pop(v_stack);
+        size_t bot = vstack_pop(v_stack);
+        vstack_push(v_stack, high);
+        vstack_push(v_stack, bot);
         break;
 
-      case 11:
-        fprintf (f, "ELEM");
+      case 11: { // ELEM
+        size_t index = vstack_pop(v_stack);
+        size_t value = vstack_pop(v_stack);
+        vstack_push(v_stack, (size_t) Belem((void*) value, index));
         break;
+      }
         
       default:
         FAIL;
       }
       break;
       
-    case 2:
-    case 3:
-    case 4:
-      fprintf (f, "%s\t", lds[h-2]);
-      switch (l) {
-      case 0: fprintf (f, "G(%d)", INT); break;
-      case 1: fprintf (f, "L(%d)", INT); break;
-      case 2: fprintf (f, "A(%d)", INT); break;
-      case 3: fprintf (f, "C(%d)", INT); break;
-      default: FAIL;
-      }
+    case 2:  // LD
+      vstack_push(v_stack, *get_memory_addr(l, INT, fp, bf, v_stack));
+      break;
+    case 3: // LDA
+      vstack_push(v_stack, (size_t) get_memory_addr(l, INT, fp, bf, v_stack));
+      break;
+    case 4: { // ST
+      size_t value = vstack_pop(v_stack);
+      size_t *stack_value = get_memory_addr(l, INT, fp, bf, v_stack);
+      *stack_value = value;
+      vstack_push(v_stack, value);
+      break;
+    }
       break;
       
     case 5:
+      int addr;
       switch (l) {
-      case  0:
-        fprintf (f, "CJMPz\t0x%.8x", INT);
+      case  0: // CJMPz
+        addr = INT;
+        if (UNBOX(vstack_pop(v_stack)) == 0) {
+          ip = bf->code_ptr + addr;
+        }
         break;
         
-      case  1:
-        fprintf (f, "CJMPnz\t0x%.8x", INT);
+      case  1: // CJMPnz
+        addr = INT;
+        if (UNBOX(vstack_pop(v_stack)) != 0) {
+          ip = bf->code_ptr + addr;
+        }
         break;
         
-      case  2:
-        fprintf (f, "BEGIN\t%d ", INT);
-        fprintf (f, "%d", INT);
+      case  2: // BEGIN
+      case  3: { // CBEGIN
+        int argc = INT;
+        int localc = INT;
+
+        vstack_push(v_stack, (size_t) fp);
+        fp = vstack_top(v_stack);
+        for (int i = 0; i < localc; i++) {
+          vstack_push(v_stack, BOX(0));
+        }
+      }
         break;
         
-      case  3:
-        fprintf (f, "CBEGIN\t%d ", INT);
-        fprintf (f, "%d", INT);
+      case  4: { // CLOSURE
+        size_t addr = INT;
+        size_t argc = INT;
+        int* values = (int*) malloc(sizeof(int) * argc);
+        if (values == NULL) {
+          failure("Failed to allocate memory for closure args");
+        }
+        for (size_t i = 0; i < argc; i++) {
+          char type = BYTE;
+          values[i] = *get_memory_addr(type, INT, fp, bf, v_stack);
+        }
+
+        vstack_push(v_stack, (size_t) Bclosure_values(BOX(argc), (void*) (bf->code_ptr + addr), values));
+        free(values);
         break;
-        
-      case  4:
-        fprintf (f, "CLOSURE\t0x%.8x", INT);
-        {int n = INT;
-         for (int i = 0; i<n; i++) {
-         switch (BYTE) {
-           case 0: fprintf (f, "G(%d)", INT); break;
-           case 1: fprintf (f, "L(%d)", INT); break;
-           case 2: fprintf (f, "A(%d)", INT); break;
-           case 3: fprintf (f, "C(%d)", INT); break;
-           default: FAIL;
-         }
-         }
-        };
-        break;
+      }
           
-      case  5:
-        fprintf (f, "CALLC\t%d", INT);
+      case  5: { // CALLC
+        size_t argc = INT;
+        vstack_reverse(v_stack, argc);
+
+        char* func_ip = (char*) Belem((void*) vstack_top(v_stack)[argc], BOX(0));
+        vstack_push(v_stack, (size_t) ip);
+        vstack_push(v_stack, argc + 1);
+        ip = func_ip;
+        break;
+      }
+        
+      case  6: { // CALL
+        size_t addr = INT;
+        size_t argc = INT;
+        vstack_reverse(v_stack, argc);
+        vstack_push(v_stack, (size_t) ip);
+        vstack_push(v_stack, argc);
+        ip = bf->code_ptr + addr;
+        break;
+      }
+        
+      case  7: // TAG
+        char* name = STRING;
+        size_t size = (size_t) INT;
+        size_t data = vstack_pop(v_stack);
+        vstack_push(v_stack, (size_t) Btag((void*) data, LtagHash(name), BOX(size)));
         break;
         
-      case  6:
-        fprintf (f, "CALL\t0x%.8x ", INT);
-        fprintf (f, "%d", INT);
+      case  8: { // ARRAY
+        size_t size = INT;
+        size_t arr = vstack_pop(v_stack);
+        vstack_push(v_stack, (size_t) Barray_patt((void*) arr, BOX(size)));
         break;
-        
-      case  7:
-        fprintf (f, "TAG\t%s ", STRING);
-        fprintf (f, "%d", INT);
-        break;
-        
-      case  8:
-        fprintf (f, "ARRAY\t%d", INT);
-        break;
+      }
         
       case  9:
-        fprintf (f, "FAIL\t%d", INT);
-        fprintf (f, "%d", INT);
+        int a = INT;
+        int b = INT;
+        failure("FAIL %d %d", a, b);
         break;
         
-      case 10:
-        fprintf (f, "LINE\t%d", INT);
+      case 10: // LINE
+        INT;
         break;
 
       default:
@@ -236,31 +372,81 @@ void disassemble (FILE *f, bytefile *bf) {
       }
       break;
       
-    case 6:
-      fprintf (f, "PATT\t%s", pats[l]);
+    case 6: // PATT
+      switch (l)
+      {
+      case 0: // StrCmp
+        size_t value1 = vstack_pop(v_stack);
+        size_t value2 = vstack_pop(v_stack);
+        vstack_push(v_stack, (size_t) Bstring_patt((void*) value1, (void*) value2));
+        break;
+
+      case 1: // String
+        value = vstack_pop(v_stack);
+        vstack_push(v_stack, (size_t) Bstring_tag_patt((void*) value));
+        break;
+
+      case 2: // Array
+        value = vstack_pop(v_stack);
+        vstack_push(v_stack, (size_t) Barray_tag_patt((void*) value));
+        break;
+      
+      case 3: // Sexp
+        value = vstack_pop(v_stack);
+        vstack_push(v_stack, (size_t) Bsexp_tag_patt((void*) value));
+        break;
+
+      case 4: // Boxed
+        value = vstack_pop(v_stack);
+        vstack_push(v_stack, (size_t) Bboxed_patt((void*) value));
+        break;
+      
+      case 5: // Unboxed
+        value = vstack_pop(v_stack);
+        vstack_push(v_stack, (size_t) Bunboxed_patt((void*) value));
+        break;
+
+      case 6: // Fun
+        value = vstack_pop(v_stack);
+        vstack_push(v_stack, (size_t) Bclosure_tag_patt((void*) value));
+        break;
+      
+      default:
+        failure("Unexpected %d code in PATT command", (int) l);
+        break;
+      }
       break;
 
     case 7: {
       switch (l) {
       case 0:
-        fprintf (f, "CALL\tLread");
+        vstack_push(v_stack, (size_t) Lread());
         break;
         
       case 1:
-        fprintf (f, "CALL\tLwrite");
+        vstack_push(v_stack, (size_t) Lwrite(vstack_pop(v_stack)));
         break;
 
       case 2:
-        fprintf (f, "CALL\tLlength");
+        void* array = (void*) vstack_pop(v_stack);
+        vstack_push(v_stack, (size_t) Llength(array));
         break;
 
       case 3:
-        fprintf (f, "CALL\tLstring");
+        void* value = (void*) vstack_pop(v_stack);
+        vstack_push(v_stack, (size_t) Lstring(value));
         break;
 
-      case 4:
-        fprintf (f, "CALL\tBarray\t%d", INT);
+      case 4: {
+        int size = INT;
+        vstack_reverse(v_stack, (size_t) size);
+        void* array = Barray_data(BOX(size), (int*) *v_stack->cur);
+        for (int i = 0; i < size; i++) {
+          vstack_pop(v_stack);
+        }
+        vstack_push(v_stack, (size_t) array);
         break;
+      }
 
       default:
         FAIL;
@@ -271,36 +457,27 @@ void disassemble (FILE *f, bytefile *bf) {
     default:
       FAIL;
     }
-
-    fprintf (f, "\n");
   }
-  while (1);
- stop: fprintf (f, "<end>\n");
-}
-
-/* Dumps the contents of the file */
-void dump_file (FILE *f, bytefile *bf) {
-  int i;
-  
-  fprintf (f, "String table size       : %d\n", bf->stringtab_size);
-  fprintf (f, "Global area size        : %d\n", bf->global_area_size);
-  fprintf (f, "Number of public symbols: %d\n", bf->public_symbols_number);
-  fprintf (f, "Public symbols          :\n");
-
-  for (i=0; i < bf->public_symbols_number; i++) 
-    fprintf (f, "   0x%.8x: %s\n", get_public_offset (bf, i), get_public_name (bf, i));
-
-  fprintf (f, "Code:\n");
-  disassemble (f, bf);
 }
 
 int main (int argc, char* argv[]) {
   if (argc != 2) {
-    printf("Usage: lamai <lama executable file>");
+    printf("Usage: byterun <lama executable file>");
     return 1;
   }
   
   bytefile *f = read_file (argv[1]);
-  dump_file (stdout, f);
+
+  virt_stack* v_stack = vstack_create(SPACE_SIZE, &__gc_stack_top);
+  if (v_stack == NULL) {
+    failure("Failed to create virtual stack");
+  }
+  
+  __gc_stack_bottom = __gc_stack_top;
+  __gc_init();
+
+  interpret(f, v_stack);
+
+  vstack_destruct(v_stack);
   return 0;
 }
