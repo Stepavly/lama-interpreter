@@ -1,7 +1,7 @@
 CC=gcc
 
-all: gc_runtime.o runtime.o virt_stack.o
-	ar rc runtime.a gc_runtime.o runtime.o virt_stack.o
+all: gc_runtime.o runtime.o
+	ar rc runtime.a gc_runtime.o runtime.o
 
 gc_runtime.o: gc_runtime.s
 	$(CC) -g -fstack-protector-all -m32 -c gc_runtime.s
