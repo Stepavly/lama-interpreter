@@ -14,81 +14,54 @@ extern size_t SPACE_SIZE;
 void *__start_custom_data;
 void *__stop_custom_data;
 
-struct {
-  size_t *bot;
-  size_t *top;
-  size_t **cur;
-} typedef virt_stack;
+size_t *stack_bot;
+size_t *stack_top;
 
-static inline virt_stack *vstack_create (size_t size, size_t **cur) {
-  virt_stack *st = (virt_stack*) malloc(sizeof(virt_stack));
-  if (st == NULL) {
-    return NULL;
-  }
-
-  size_t *stack = (size_t*) malloc(sizeof(size_t) * size);
-  if (stack == NULL) {
-    free(st);
-    return NULL;
-  }
-
-  st->bot = stack;
-  st->top = stack + size;
-  st->cur = cur;
-  *cur = st->top;
-  return st;
+static inline size_t vstack_size () {
+  return stack_top - __gc_stack_top;
 }
 
-static inline void vstack_destruct (virt_stack *st) { 
-  free(st->bot);
-  free(st); 
-}
-
-static inline size_t vstack_size (virt_stack *st) {
-  return st->top - *st->cur;
-}
-
-static inline void vstack_push (virt_stack *st, size_t value) {
-  if (*st->cur == st->bot) {
+static inline void vstack_push (size_t value) {
+  if (__gc_stack_top == stack_bot) {
     failure("Stack overflow");
   }
-  --(*st->cur);
-  **st->cur = value;
+  --__gc_stack_top;
+  *__gc_stack_top = value;
 }
 
-static inline void vstack_reverse (virt_stack *st, size_t size) {
-  if (vstack_size(st) < size) {
+static inline void vstack_reverse (size_t size) {
+  if (vstack_size() < size) {
     failure("Stack size less than reversing size");
   }
   for (size_t i = 0; i * 2 < size; i++) {
-    size_t tmp = *(*st->cur + i);
-    *(*st->cur + i) = *(*st->cur + (size - i - 1));
-    *(*st->cur + (size - i - 1)) = tmp;
+    size_t tmp = *(__gc_stack_top + i);
+    *(__gc_stack_top + i) = *(__gc_stack_top + (size - i - 1));
+    *(__gc_stack_top + (size - i - 1)) = tmp;
   }
 }
 
-static inline size_t vstack_pop (virt_stack *st) {
-  if (*st->cur == st->top) {
+static inline size_t vstack_pop () {
+  if (__gc_stack_top == stack_top) {
     failure("Pop from empty stack");
   }
-  size_t value = **st->cur;
-  ++(*st->cur);
+  size_t value = (size_t) *__gc_stack_top;
+  ++__gc_stack_top;
   return value;
 }
 
-static inline size_t *vstack_top (virt_stack *st) { 
-  return *st->cur;
+static inline size_t *vstack_top () { 
+  return (size_t*) __gc_stack_top;
 }
 
-static inline size_t vstack_kth_from_cur (virt_stack *st, size_t k) {
-  if (vstack_size(st) < k) {
+static inline size_t vstack_kth_from_cur (size_t k) {
+  if (vstack_size() < k) {
     failure("Stack size less than index");
   }
-  return *(*st->cur + k);
+  return *(__gc_stack_top + k);
 }
 
-static inline size_t *vstack_access(virt_stack *st, size_t *addr) {
-  if (!(*st->cur <= addr && addr < st->top)) {
+static inline size_t *vstack_access(size_t *addr) {
+  if (!(__gc_stack_top <= addr && addr < stack_top)) {
     failure("Accessing stack by removed address");
   }
   return addr;
@@ -194,21 +167,21 @@ size_t eval_binop(size_t left, size_t right, char binop_code) {
   }
 }
 
-size_t* get_memory_addr(char type, int offset, size_t *fp, bytefile *bf, virt_stack *v_stack) {
+size_t* get_memory_addr(char type, int offset, size_t *fp, bytefile *bf) {
   switch (type)
   {
   case 0: // Global
     return bf->global_ptr + offset;
 
   case 1: // Local
-    return vstack_access(v_stack, fp - offset - 1);
+    return vstack_access(fp - offset - 1);
   
   case 2: // Arg
-    return vstack_access(v_stack, fp + offset + 3);
+    return vstack_access(fp + offset + 3);
 
   case 3: // Access
-    size_t closure_args = *vstack_access(v_stack, fp + 1) - 1;
-    size_t closure_addr = *vstack_access(v_stack, fp + 3 + closure_args);
+    size_t closure_args = *vstack_access(fp + 1) - 1;
+    size_t closure_addr = *vstack_access(fp + 3 + closure_args);
     return (size_t*) Belem_ref((void*) closure_addr, BOX(offset + 1));
 
   default:
@@ -217,7 +190,7 @@ size_t* get_memory_addr(char type, int offset, size_t *fp, bytefile *bf, virt_st
 }
 
 /* Disassembles the bytecode pool */
-void interpret (bytefile *bf, virt_stack* v_stack) {
+void interpret (bytefile *bf) {
   
 # define INT    (ip += sizeof (int), *(int*)(ip - sizeof (int)))
 # define BYTE   *ip++
@@ -225,13 +198,13 @@ void interpret (bytefile *bf, virt_stack* v_stack) {
 # define FAIL   failure ("ERROR: invalid opcode %d-%d\n", h, l)
   
 
-  vstack_push(v_stack, 0);
-  vstack_push(v_stack, 0);
-  vstack_push(v_stack, 0);
-  vstack_push(v_stack, 2);
+  vstack_push(0);
+  vstack_push(0);
+  vstack_push(0);
+  vstack_push(2);
 
   char *ip     = bf->code_ptr;
-  size_t *fp   = vstack_top(v_stack);
+  size_t *fp   = vstack_top();
   while (ip != NULL) {
     char x = BYTE,
          h = (x & 0xF0) >> 4,
@@ -242,24 +215,24 @@ void interpret (bytefile *bf, virt_stack* v_stack) {
       return;
       
     case L_BINOP:
-      size_t right = vstack_pop(v_stack);
-      size_t left = vstack_pop(v_stack);
-      vstack_push(v_stack, eval_binop(left, right, l - 1));
+      size_t right = vstack_pop();
+      size_t left = vstack_pop();
+      vstack_push(eval_binop(left, right, l - 1));
       continue;
       
     case L_LD:
-      vstack_push(v_stack, *get_memory_addr(l, INT, fp, bf, v_stack));
+      vstack_push(*get_memory_addr(l, INT, fp, bf));
       continue;
 
     case L_LDA:
-      vstack_push(v_stack, (size_t) get_memory_addr(l, INT, fp, bf, v_stack));
+      vstack_push((size_t) get_memory_addr(l, INT, fp, bf));
       continue;
     
     case L_ST: {
-      size_t value = vstack_pop(v_stack);
-      size_t *stack_value = get_memory_addr(l, INT, fp, bf, v_stack);
+      size_t value = vstack_pop();
+      size_t *stack_value = get_memory_addr(l, INT, fp, bf);
       *stack_value = value;
-      vstack_push(v_stack, value);
+      vstack_push(value);
       continue;
     }
       
@@ -268,39 +241,39 @@ void interpret (bytefile *bf, virt_stack* v_stack) {
       switch (l)
       {
       case PATT_STR:
-        size_t value1 = vstack_pop(v_stack);
-        size_t value2 = vstack_pop(v_stack);
-        vstack_push(v_stack, (size_t) Bstring_patt((void*) value1, (void*) value2));
+        size_t value1 = vstack_pop();
+        size_t value2 = vstack_pop();
+        vstack_push((size_t) Bstring_patt((void*) value1, (void*) value2));
         continue;
 
       case PATT_TAG_STR:
-        value = vstack_pop(v_stack);
-        vstack_push(v_stack, (size_t) Bstring_tag_patt((void*) value));
+        value = vstack_pop();
+        vstack_push((size_t) Bstring_tag_patt((void*) value));
         continue;
 
       case PATT_TAG_ARR:
-        value = vstack_pop(v_stack);
-        vstack_push(v_stack, (size_t) Barray_tag_patt((void*) value));
+        value = vstack_pop();
+        vstack_push((size_t) Barray_tag_patt((void*) value));
         continue;
       
       case PATT_TAG_SEXP:
-        value = vstack_pop(v_stack);
-        vstack_push(v_stack, (size_t) Bsexp_tag_patt((void*) value));
+        value = vstack_pop();
+        vstack_push((size_t) Bsexp_tag_patt((void*) value));
         continue;
 
       case PATT_BOXED:
-        value = vstack_pop(v_stack);
-        vstack_push(v_stack, (size_t) Bboxed_patt((void*) value));
+        value = vstack_pop();
+        vstack_push((size_t) Bboxed_patt((void*) value));
         continue;
       
       case PATT_UNBOXED:
-        value = vstack_pop(v_stack);
-        vstack_push(v_stack, (size_t) Bunboxed_patt((void*) value));
+        value = vstack_pop();
+        vstack_push((size_t) Bunboxed_patt((void*) value));
         continue;
 
       case PATT_TAG_CLOSURE:
-        value = vstack_pop(v_stack);
-        vstack_push(v_stack, (size_t) Bclosure_tag_patt((void*) value));
+        value = vstack_pop();
+        vstack_push((size_t) Bclosure_tag_patt((void*) value));
         continue;
       
       default:
@@ -318,23 +291,23 @@ void interpret (bytefile *bf, virt_stack* v_stack) {
     switch (x)
     {
     case L_CONST:
-      vstack_push(v_stack, (size_t) BOX(INT));
+      vstack_push((size_t) BOX(INT));
       break;
 
     case L_STRING:
-      vstack_push(v_stack, (size_t) Bstring(STRING));
+      vstack_push((size_t) Bstring(STRING));
       break;
 
     case L_SEXP: {
         char* name = STRING;
         size_t argc = (size_t) INT;
         int tag = LtagHash(name);
-        vstack_reverse(v_stack, argc);
-        void* sexp = Bsexp_data(BOX(argc + 1), tag, (int*) vstack_top(v_stack));
+        vstack_reverse(argc);
+        void* sexp = Bsexp_data(BOX(argc + 1), tag, (int*) vstack_top());
         for (size_t i = 0; i < argc; i++) {
-          vstack_pop(v_stack);
+          vstack_pop();
         }
-        vstack_push(v_stack, (size_t) sexp);
+        vstack_push((size_t) sexp);
         break;
       }
         
@@ -343,13 +316,13 @@ void interpret (bytefile *bf, virt_stack* v_stack) {
       break;
       
     case L_STA:
-      value = vstack_pop(v_stack);
-      size_t index = vstack_pop(v_stack);
+      value = vstack_pop();
+      size_t index = vstack_pop();
       if (UNBOXED(index)) {
-        size_t x = vstack_pop(v_stack);
-        vstack_push(v_stack, (size_t) Bsta((void*) value, (int) index, (void*) x));
+        size_t x = vstack_pop();
+        vstack_push((size_t) Bsta((void*) value, (int) index, (void*) x));
       } else {
-        vstack_push(v_stack, (size_t) Bsta((void*) value, (int) index, NULL));
+        vstack_push((size_t) Bsta((void*) value, (int) index, NULL));
       }
       break;
       
@@ -358,18 +331,18 @@ void interpret (bytefile *bf, virt_stack* v_stack) {
       break;
       
     case L_END: {
-      size_t value = vstack_pop(v_stack);
-      while (vstack_top(v_stack) != fp) {
-        vstack_pop(v_stack);
+      size_t value = vstack_pop();
+      while (vstack_top() != fp) {
+        vstack_pop();
       }
-      fp = (size_t*) vstack_pop(v_stack);
-      size_t argc = vstack_pop(v_stack);
-      ip = (char*) vstack_pop(v_stack);
+      fp = (size_t*) vstack_pop();
+      size_t argc = vstack_pop();
+      ip = (char*) vstack_pop();
       
       for (size_t i = 0; i < argc; i++) {
-        vstack_pop(v_stack);
+        vstack_pop();
       }
-      vstack_push(v_stack, value);
+      vstack_push(value);
       break;
     }
       
@@ -378,39 +351,39 @@ void interpret (bytefile *bf, virt_stack* v_stack) {
       break;
       
     case L_DROP:
-      vstack_pop(v_stack);
+      vstack_pop();
       break;
       
     case L_DUP:
-      value = vstack_pop(v_stack);
-      vstack_push(v_stack, value);
-      vstack_push(v_stack, value);
+      value = vstack_pop();
+      vstack_push(value);
+      vstack_push(value);
       break;
       
     case L_SWAP: 
-      size_t high = vstack_pop(v_stack);
-      size_t bot = vstack_pop(v_stack);
-      vstack_push(v_stack, high);
-      vstack_push(v_stack, bot);
+      size_t high = vstack_pop();
+      size_t bot = vstack_pop();
+      vstack_push(high);
+      vstack_push(bot);
       break;
 
     case L_ELEM: { 
-      size_t index = vstack_pop(v_stack);
-      size_t value = vstack_pop(v_stack);
-      vstack_push(v_stack, (size_t) Belem((void*) value, index));
+      size_t index = vstack_pop();
+      size_t value = vstack_pop();
+      vstack_push((size_t) Belem((void*) value, index));
       break;
     }
 
     case L_CJMP_Z: 
       addr = INT;
-      if (UNBOX(vstack_pop(v_stack)) == 0) {
+      if (UNBOX(vstack_pop()) == 0) {
         ip = bf->code_ptr + addr;
       }
       break;
       
     case L_CJMP_NZ:
       addr = INT;
-      if (UNBOX(vstack_pop(v_stack)) != 0) {
+      if (UNBOX(vstack_pop()) != 0) {
         ip = bf->code_ptr + addr;
       }
       break;
@@ -420,10 +393,10 @@ void interpret (bytefile *bf, virt_stack* v_stack) {
       int argc = INT;
       int localc = INT;
 
-      vstack_push(v_stack, (size_t) fp);
-      fp = vstack_top(v_stack);
+      vstack_push((size_t) fp);
+      fp = vstack_top();
       for (int i = 0; i < localc; i++) {
-        vstack_push(v_stack, BOX(0));
+        vstack_push(BOX(0));
       }
     }
       break;
@@ -434,20 +407,20 @@ void interpret (bytefile *bf, virt_stack* v_stack) {
       int values[argc];
       for (size_t i = 0; i < argc; i++) {
         char type = BYTE;
-        values[i] = *get_memory_addr(type, INT, fp, bf, v_stack);
+        values[i] = *get_memory_addr(type, INT, fp, bf);
       }
 
-      vstack_push(v_stack, (size_t) Bclosure_values(BOX(argc), (void*) (bf->code_ptr + addr), values));
+      vstack_push((size_t) Bclosure_values(BOX(argc), (void*) (bf->code_ptr + addr), values));
       break;
     }
         
     case L_CALLC: {
       size_t argc = INT;
-      vstack_reverse(v_stack, argc);
+      vstack_reverse(argc);
 
-      char* func_ip = (char*) Belem((void*) vstack_top(v_stack)[argc], BOX(0));
-      vstack_push(v_stack, (size_t) ip);
-      vstack_push(v_stack, argc + 1);
+      char* func_ip = (char*) Belem((void*) vstack_top()[argc], BOX(0));
+      vstack_push((size_t) ip);
+      vstack_push(argc + 1);
       ip = func_ip;
       break;
     }
@@ -455,9 +428,9 @@ void interpret (bytefile *bf, virt_stack* v_stack) {
     case L_CALL: {
       size_t addr = INT;
       size_t argc = INT;
-      vstack_reverse(v_stack, argc);
-      vstack_push(v_stack, (size_t) ip);
-      vstack_push(v_stack, argc);
+      vstack_reverse(argc);
+      vstack_push((size_t) ip);
+      vstack_push(argc);
       ip = bf->code_ptr + addr;
       break;
     }
@@ -465,14 +438,14 @@ void interpret (bytefile *bf, virt_stack* v_stack) {
     case L_TAG:
       char* name = STRING;
       size_t size = (size_t) INT;
-      size_t data = vstack_pop(v_stack);
-      vstack_push(v_stack, (size_t) Btag((void*) data, LtagHash(name), BOX(size)));
+      size_t data = vstack_pop();
+      vstack_push((size_t) Btag((void*) data, LtagHash(name), BOX(size)));
       break;
       
     case L_ARRAY: {
       size_t size = INT;
-      size_t arr = vstack_pop(v_stack);
-      vstack_push(v_stack, (size_t) Barray_patt((void*) arr, BOX(size)));
+      size_t arr = vstack_pop();
+      vstack_push((size_t) Barray_patt((void*) arr, BOX(size)));
       break;
     }
       
@@ -487,31 +460,31 @@ void interpret (bytefile *bf, virt_stack* v_stack) {
       break;
 
     case L_CALL_READ:
-      vstack_push(v_stack, (size_t) Lread());
+      vstack_push((size_t) Lread());
       break;
       
     case L_CALL_WRITE:
-      vstack_push(v_stack, (size_t) Lwrite(vstack_pop(v_stack)));
+      vstack_push((size_t) Lwrite(vstack_pop()));
       break;
 
     case L_CALL_LENGTH:
-      void* array = (void*) vstack_pop(v_stack);
-      vstack_push(v_stack, (size_t) Llength(array));
+      void* array = (void*) vstack_pop();
+      vstack_push((size_t) Llength(array));
       break;
 
     case L_CALL_STRING:
-      void* value = (void*) vstack_pop(v_stack);
-      vstack_push(v_stack, (size_t) Lstring(value));
+      void* value = (void*) vstack_pop();
+      vstack_push((size_t) Lstring(value));
       break;
 
     case L_CALL_ARRAY: {
       int size = INT;
-      vstack_reverse(v_stack, (size_t) size);
-      void* array = Barray_data(BOX(size), (int*) *v_stack->cur);
+      vstack_reverse((size_t) size);
+      void* array = Barray_data(BOX(size), (int*) vstack_top());
       for (int i = 0; i < size; i++) {
-        vstack_pop(v_stack);
+        vstack_pop();
       }
-      vstack_push(v_stack, (size_t) array);
+      vstack_push((size_t) array);
       break;
     }
 
@@ -524,22 +497,25 @@ void interpret (bytefile *bf, virt_stack* v_stack) {
 
 int main (int argc, char* argv[]) {
   if (argc != 2) {
-    printf("Usage: byterun <lama executable file>");
+    printf("Usage: byterun <lama byte code file>");
     return 1;
   }
   
   bytefile *f = read_file (argv[1]);
 
-  virt_stack* v_stack = vstack_create(SPACE_SIZE, &__gc_stack_top);
-  if (v_stack == NULL) {
+  stack_bot = (size_t*) malloc(sizeof(size_t) * SPACE_SIZE);
+  if (stack_bot == NULL) {
     failure("Failed to create virtual stack");
+    return 1;
   }
   
-  __gc_stack_bottom = __gc_stack_top;
+  stack_top = stack_bot + SPACE_SIZE;
+  __gc_stack_bottom = __gc_stack_top = stack_top;
   __gc_init();
 
-  interpret(f, v_stack);
+  interpret(f);
 
-  vstack_destruct(v_stack);
+  free(stack_bot);
+  free(f);
   return 0;
 }

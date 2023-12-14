@@ -23,13 +23,13 @@
 ```
 Executing lamac interpreter
 
-real    0m3,714s
-user    0m3,694s
-sys     0m0,020s
+real    0m3,661s
+user    0m3,661s
+sys     0m0,000s
 
 Executing iterative interpreter
 
-real    0m1,635s
-user    0m1,618s
-sys     0m0,016s
+real    0m1,470s
+user    0m1,458s
+sys     0m0,012s
 ```
