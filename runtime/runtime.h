@@ -20,6 +20,11 @@
 # define UNBOX(x)    (((int) (x)) >> 1)
 # define BOX(x)      ((((int) (x)) << 1) | 0x0001)
 
+# define ASSERT_BOXED(memo, x)               \
+  do if (UNBOXED(x)) failure ("boxed value expected in %s\n", memo); while (0)
+# define ASSERT_UNBOXED(memo, x)             \
+  do if (!UNBOXED(x)) failure ("unboxed value expected in %s\n", memo); while (0)
+
 void failure (char *s, ...);
 
 int Lread();
@@ -43,44 +48,5 @@ int Bsexp_tag_patt (void *x);
 int Bunboxed_patt (void *x);
 int Bboxed_patt (void *x);
 int Bclosure_tag_patt (void *x);
-
-// Functional synonym for built-in operator "!!";
-int Ls__Infix_3333 (void *p, void *q);
-
-// Functional synonym for built-in operator "&&";
-int Ls__Infix_3838 (void *p, void *q);
-
-// Functional synonym for built-in operator "==";
-int Ls__Infix_6161 (void *p, void *q);
-
-// Functional synonym for built-in operator "!=";
-int Ls__Infix_3361 (void *p, void *q);
-
-// Functional synonym for built-in operator "<=";
-int Ls__Infix_6061 (void *p, void *q);
-
-// Functional synonym for built-in operator "<";
-int Ls__Infix_60 (void *p, void *q);
-
-// Functional synonym for built-in operator ">=";
-int Ls__Infix_6261 (void *p, void *q);
-
-// Functional synonym for built-in operator ">";
-int Ls__Infix_62 (void *p, void *q);
-
-// Functional synonym for built-in operator "+";
-int Ls__Infix_43 (void *p, void *q);
-
-// Functional synonym for built-in operator "-";
-int Ls__Infix_45 (void *p, void *q);
-
-// Functional synonym for built-in operator "*";
-int Ls__Infix_42 (void *p, void *q);
-
-// Functional synonym for built-in operator "/";
-int Ls__Infix_47 (void *p, void *q);
-
-// Functional synonym for built-in operator "%";
-int Ls__Infix_37 (void *p, void *q);
 
 # endif

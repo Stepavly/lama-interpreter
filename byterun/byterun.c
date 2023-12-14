@@ -25,8 +25,7 @@ static inline void vstack_push (size_t value) {
   if (__gc_stack_top == stack_bot) {
     failure("Stack overflow");
   }
-  --__gc_stack_top;
-  *__gc_stack_top = value;
+  *--__gc_stack_top = value;
 }
 
 static inline void vstack_reverse (size_t size) {
@@ -44,9 +43,7 @@ static inline size_t vstack_pop () {
   if (__gc_stack_top == stack_top) {
     failure("Pop from empty stack");
   }
-  size_t value = (size_t) *__gc_stack_top;
-  ++__gc_stack_top;
-  return value;
+  return (size_t) *__gc_stack_top++;
 }
 
 static inline size_t *vstack_top () { 
@@ -131,34 +128,75 @@ bytefile* read_file (char *fname) {
 }
 
 size_t eval_binop(size_t left, size_t right, char binop_code) {
+  void *p = (void*) left;
+  void *q = (void*) right;
   switch (binop_code)
   {
   case L_PLUS: // "+"
-    return (size_t) Ls__Infix_43((void*) left, (void*) right);
+    ASSERT_UNBOXED("captured +:1", p);
+    ASSERT_UNBOXED("captured +:2", q);
+
+    return BOX(UNBOX(p) + UNBOX(q));
   case L_MINUS: // "-"
-    return (size_t) Ls__Infix_45((void*) left, (void*) right);
+    if (UNBOXED(p)) {
+      ASSERT_UNBOXED("captured -:2", q);
+      return BOX(UNBOX(p) - UNBOX(q));
+    }
+
+    ASSERT_BOXED("captured -:1", q);
+    return BOX(p - q);
   case L_MUL: // "*"
-    return (size_t) Ls__Infix_42((void*) left, (void*) right);
+    ASSERT_UNBOXED("captured *:1", p);
+    ASSERT_UNBOXED("captured *:2", q);
+
+    return BOX(UNBOX(p) * UNBOX(q));
   case L_DIV: // "/"
-    return (size_t) Ls__Infix_47((void*) left, (void*) right);
+    ASSERT_UNBOXED("captured /:1", p);
+    ASSERT_UNBOXED("captured /:2", q);
+
+    return BOX(UNBOX(p) / UNBOX(q));
   case L_MOD: // "%"
-    return (size_t) Ls__Infix_37((void*) left, (void*) right);
+    ASSERT_UNBOXED("captured %:1", p);
+    ASSERT_UNBOXED("captured %:2", q);
+
+    return BOX(UNBOX(p) % UNBOX(q));
   case L_LT: // "<"
-    return (size_t) Ls__Infix_60((void*) left, (void*) right);
+    ASSERT_UNBOXED("captured <:1", p);
+    ASSERT_UNBOXED("captured <:2", q);
+
+    return BOX(UNBOX(p) < UNBOX(q));
   case L_LTEQ: // "<="
-    return (size_t) Ls__Infix_6061((void*) left, (void*) right);
+    ASSERT_UNBOXED("captured <=:1", p);
+    ASSERT_UNBOXED("captured <=:2", q);
+
+    return BOX(UNBOX(p) <= UNBOX(q));
   case L_GT: // ">"
-    return (size_t) Ls__Infix_62((void*) left, (void*) right);
+    ASSERT_UNBOXED("captured >:1", p);
+    ASSERT_UNBOXED("captured >:2", q);
+
+    return BOX(UNBOX(p) > UNBOX(q));
   case L_GTEQ: // ">="
-    return (size_t) Ls__Infix_6261((void*) left, (void*) right);
+    ASSERT_UNBOXED("captured >=:1", p);
+    ASSERT_UNBOXED("captured >=:2", q);
+
+    return BOX(UNBOX(p) >= UNBOX(q));
   case L_EQ: // "=="
-    return (size_t) Ls__Infix_6161((void*) left, (void*) right);
+    return BOX(p == q);
   case L_NEQ: // "!="
-    return (size_t) Ls__Infix_3361((void*) left, (void*) right);
+    ASSERT_UNBOXED("captured !=:1", p);
+    ASSERT_UNBOXED("captured !=:2", q);
+
+    return BOX(UNBOX(p) != UNBOX(q));
   case L_AND: // "&&"
-    return (size_t) Ls__Infix_3838((void*) left, (void*) right);
+    ASSERT_UNBOXED("captured &&:1", p);
+    ASSERT_UNBOXED("captured &&:2", q);
+
+    return BOX(UNBOX(p) && UNBOX(q));
   case L_OR: // "!!"
-    return (size_t) Ls__Infix_3333((void*) left, (void*) right);
+    ASSERT_UNBOXED("captured !!:1", p);
+    ASSERT_UNBOXED("captured !!:2", q);
+
+    return BOX(UNBOX(p) || UNBOX(q));
   
   default:
     failure("Unexpected binop code %d", (int) binop_code);
